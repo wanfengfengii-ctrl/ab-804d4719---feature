@@ -96,3 +96,128 @@ def test_bad_json_400():
     )
     assert resp.status_code == 400
     assert resp.json()["code"] == "INVALID_INPUT"
+
+
+# --------------------------------------------------------------------------- #
+# 滑移接头模式
+# --------------------------------------------------------------------------- #
+def slip_payload():
+    lengths = [10, 12, 11, 13, 10, 14]
+    truth = [3, 5, 4, 2, 6, 1]  # diffs = [2,-1,-2,4,-5]
+    spans = [(0, 5), (0, 0), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (0, 2)]
+    windows = []
+    for s, e in spans:
+        total = sum(lengths[i] * truth[i] for i in range(s, e + 1))
+        windows.append(
+            {
+                "start_segment": s + 1,
+                "end_segment": e + 1,
+                "min_elongation": total,
+                "max_elongation": total,
+            }
+        )
+    return {
+        "segment_lengths": lengths,
+        "strain_bounds": {"min": -50, "max": 50},
+        "windows": windows,
+    }
+
+
+def test_slip_success_and_only_selected_boundary_excluded():
+    payload = slip_payload()
+    payload["slip_joint"] = {
+        "candidate_boundaries": [2, 5],
+        "min_jump": 4,
+    }
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    slip = result["slip_joint"]
+    assert slip["selected_boundary"] == 5
+    assert slip["signed_jump"] == -5
+    assert slip["jump_satisfied"] is True
+    assert slip["min_jump"] == 4
+
+    # 必须且只选择一个候选边界。
+    selected = slip["selected_boundary"]
+    assert selected in (2, 5)
+    reports = slip["candidates"]
+    assert [r["boundary"] for r in reports] == [2, 5]  # 保持录入顺序
+    by_b = {r["boundary"]: r for r in reports}
+    assert by_b[2]["feasible"] is False
+    assert "objectives" not in by_b[2]
+    assert by_b[5]["feasible"] is True
+
+    # 检修组直接复核：只有选中边界被排除在平滑指标之外。
+    participation = result["smooth_diff_participation"]
+    excluded = [p["boundary"] for p in participation if not p["participates_in_smoothness"]]
+    assert excluded == [selected]
+    strains = result["strains"]
+    diffs = [strains[i] - strains[i - 1] for i in range(1, 6)]
+    other_abs = [abs(d) for k, d in enumerate(diffs) if k != selected - 1]
+    assert result["objectives"]["max_other_adjacent_diff"] == max(other_abs)
+    assert result["objectives"]["sum_other_adjacent_abs_diff"] == sum(other_abs)
+
+    # 观测窗仍全部满足。
+    for check in result["window_checks"]:
+        assert check["satisfied"] is True
+
+
+def test_slip_invalid_boundary_422():
+    payload = slip_payload()
+    payload["slip_joint"] = {"candidate_boundaries": [0, 6], "min_jump": 1}
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 422
+    body = resp.json()
+    assert body["code"] == "INVALID_INPUT"
+    fields = {f["field"] for f in body["fields"]}
+    assert any("candidate_boundaries[0]" in f for f in fields)
+    assert any("candidate_boundaries[1]" in f for f in fields)
+
+
+def test_slip_duplicate_boundary_422():
+    payload = slip_payload()
+    payload["slip_joint"] = {"candidate_boundaries": [3, 3], "min_jump": 2}
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 422
+    assert any(
+        "duplicate" in f["message"] for f in resp.json()["fields"]
+    )
+
+
+def test_slip_wrong_count_422():
+    payload = slip_payload()
+    payload["slip_joint"] = {"candidate_boundaries": [1], "min_jump": 1}
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 422
+    assert any("candidate_boundaries" in f["field"] for f in resp.json()["fields"])
+
+
+def test_slip_nonpositive_jump_422():
+    payload = slip_payload()
+    payload["slip_joint"] = {"candidate_boundaries": [1, 2], "min_jump": 0}
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 422
+    assert any("min_jump" in f["field"] for f in resp.json()["fields"])
+
+
+def test_slip_all_candidates_infeasible_409():
+    payload = slip_payload()
+    # 序列被单段窗钉死，最大相邻差 5；阈值 6 使两个候选都不可行。
+    payload["slip_joint"] = {"candidate_boundaries": [2, 5], "min_jump": 6}
+    resp = client.post("/api/v1/invert", json=payload)
+    assert resp.status_code == 409
+    assert resp.json()["code"] == "INFEASIBLE"
+
+
+def test_default_response_unchanged_without_slip():
+    """未提供 slip_joint 时响应结构保持原样（无新增键）。"""
+    resp = client.post("/api/v1/invert", json=sample_payload())
+    assert resp.status_code == 200
+    result = resp.json()["result"]
+    assert "slip_joint" not in result
+    assert "smooth_diff_participation" not in result
+    assert set(result["objectives"]) == {
+        "max_adjacent_diff",
+        "sum_adjacent_abs_diff",
+    }

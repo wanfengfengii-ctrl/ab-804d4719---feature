@@ -40,15 +40,42 @@ async def schema_hint() -> dict:
                 }
             ],
             "window_count": "8..20",
+            "slip_joint": "(可选) 护套滑移接头定位，缺省时行为与原接口完全一致",
+            "slip_joint_fields": {
+                "candidate_boundaries": "2..6 个互异段间边界（1 基：b 位于段 b 与段 b+1 之间，取值 1..n-1），按录入顺序裁决并列",
+                "min_jump": "正整数；选中边界的带符号应变差绝对值必须不小于该值",
+            },
         },
         "success_response": {
             "segment_count": "int",
             "strains": "逐段整数微应变（字典序最优）",
             "adjacent_diffs": "逐相邻段应变差，可直接复核两级平滑指标",
             "objectives": {
-                "max_adjacent_diff": "第一级指标 = max(|adjacent_diffs|)",
-                "sum_adjacent_abs_diff": "第二级指标 = sum(|adjacent_diffs|)",
+                "max_adjacent_diff": "（默认模式）第一级指标 = max(|adjacent_diffs|)",
+                "sum_adjacent_abs_diff": "（默认模式）第二级指标 = sum(|adjacent_diffs|)",
+                "max_other_adjacent_diff": "（滑移模式）排除选中边界后其余相邻差的最大绝对值",
+                "sum_other_adjacent_abs_diff": "（滑移模式）排除选中边界后其余相邻差绝对值之和",
             },
+            "slip_joint": {
+                "selected_boundary": "唯一选中的候选段间边界（1 基）",
+                "signed_jump": "选中边界带符号突跳 = x_{b+1}-x_b，绝对值 >= min_jump",
+                "min_jump": "回显最小突跳阈值",
+                "jump_satisfied": "带符号突跳绝对值是否达标（必为 true）",
+                "candidates": [
+                    {
+                        "boundary": "候选边界（1 基，按录入顺序）",
+                        "feasible": "该边界是否存在满足全部观测窗与最小突跳的解释",
+                        "objectives": "feasible=true 时给出该边界自身最优 (max_other_adjacent_diff, sum_other_adjacent_abs_diff)",
+                    }
+                ],
+            },
+            "smooth_diff_participation": [
+                {
+                    "boundary": "段间边界（1 基）",
+                    "adjacent_diff": "该边界相邻差",
+                    "participates_in_smoothness": "仅选中边界为 false，其余全部为 true，可直接复核排除范围",
+                }
+            ],
             "window_checks": [
                 {
                     "weighted_strain_sum": "= Σ 窗内长度×应变，须落入提交的闭区间",
@@ -56,15 +83,24 @@ async def schema_hint() -> dict:
                     "satisfied": "min<=weighted_strain_sum<=max",
                 }
             ],
-            "criteria_order": [
+            "criteria_order_default": [
                 "max_adjacent_diff",
                 "sum_adjacent_abs_diff",
                 "lexicographic",
             ],
+            "criteria_order_slip": [
+                "max_other_adjacent_diff",
+                "sum_other_adjacent_abs_diff",
+                "lexicographic",
+                "candidate_input_order",
+            ],
         },
         "errors": {
             "INVALID_INPUT": {"fields": [{"field": "字段路径", "message": "原因"}]},
-            "INFEASIBLE": "观测窗彼此冲突，不存在满足全部闭区间的整数应变序列",
+            "INFEASIBLE": {
+                "default": "观测窗彼此冲突，不存在满足全部闭区间的整数应变序列",
+                "slip_joint": "合法配置下没有任何候选边界存在满足全部观测窗与最小突跳的解释",
+            },
         },
     }
 
