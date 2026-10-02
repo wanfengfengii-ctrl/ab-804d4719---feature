@@ -82,6 +82,58 @@ echo "verify exit code: $?"
 - `strain_bounds`：统一应变闭区间（整数微应变）。
 - `windows`：8–20 个观测窗；段号 1 基且含端点，`start ≤ end`，
   `min_elongation ≤ max_elongation`。
+- `slip`（**可选**）：护套滑移接头配置。启用后在同一批标距中联合定位
+  **唯一一个**滑移接头：
+  - `candidate_boundaries`：2–6 个**互异**段间边界（边界 k = 第 k 段与
+    第 k+1 段之间，1 基，取值 1..段数-1）；
+  - `min_jump`：正整数；选中边界上的应变差绝对值不得低于该阈值
+    （闭区间，恰好等于也合法）。
+
+  启用后的裁决模型：必须选择且只选择一个候选边界，该边界的应变差
+  满足 |x_k − x_{k−1}| ≥ `min_jump`，且**不参与**两级平滑指标；其余
+  相邻差仍全部参与。在「边界 × 突跳方向（上升/下降）× 逐段整数应变」
+  上联合裁决，依次最小化
+
+  1. 其余相邻差最大绝对值 `max_adjacent_diff`；
+  2. 其余相邻差绝对值之和 `sum_adjacent_abs_diff`；
+  3. 应变序列 (x_0, …, x_{n−1}) 的字典序；
+
+  三者完全并列时按候选**录入顺序**取靠前者。未提供 `slip` 时，请求、
+  响应、三级裁决与错误行为与旧版完全一致（响应中不出现 `slip` 字段）。
+  候选越界或重复返回 422 字段错误；合法配置下若不存在满足全部观测窗
+  及最小突跳的解释，返回 409 `INFEASIBLE`。
+
+  启用滑移时成功响应额外包含 `result.slip`：
+
+  ```json
+  {
+    "selected_boundary": 3,
+    "selected_boundary_entry_order": 1,
+    "signed_jump": 5,
+    "jump_direction": 1,
+    "min_jump": 5,
+    "excluded_from_smoothness": [3],
+    "smoothness_boundaries": [1, 2, 4, 5],
+    "tie_break": "candidate entry order",
+    "candidates": [
+      {"boundary": 1, "entry_order": 0, "feasible": false,
+       "directions": [{"direction": 1, "feasible": false},
+                      {"direction": -1, "feasible": false}]},
+      {"boundary": 3, "entry_order": 1, "feasible": true,
+       "max_adjacent_diff": 0, "sum_adjacent_abs_diff": 0,
+       "optimal_directions": [1],
+       "directions": [
+         {"direction": 1, "feasible": true,
+          "max_adjacent_diff": 0, "sum_adjacent_abs_diff": 0},
+         {"direction": -1, "feasible": false}]}
+    ]
+  }
+  ```
+
+  其中 `signed_jump = x_k − x_{k−1}`（带符号，可直接由 `strains`
+  复核），`excluded_from_smoothness` 恰为选中边界，
+  `smoothness_boundaries` 为参与两级平滑指标的其余全部边界——检修组
+  可直接据此复核只有选中边界被排除。
 
 成功（200）：
 
@@ -123,7 +175,8 @@ echo "verify exit code: $?"
 - `400`：请求体不是合法 JSON。
 - `422 INVALID_INPUT`：字段错误，`fields[]` 逐条给出 `field` 与 `message`。
 - `409 INFEASIBLE`：输入合法但观测窗彼此冲突（含与统一应变界冲突），
-  不存在满足全部闭区间的整数应变序列。
+  不存在满足全部闭区间的整数应变序列；启用 `slip` 时还包括没有任何
+  候选边界能同时满足全部观测窗与最小突跳。
 
 ## 本地开发（无 Docker）
 
